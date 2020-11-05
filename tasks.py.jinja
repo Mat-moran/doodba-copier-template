@@ -349,12 +349,34 @@ def lint(c, verbose=False):
 def start(c, detach=True, debugpy=False):
     """Start environment."""
     cmd = "docker-compose up"
+    if debugpy:
+        # Remove auto-reload
+        tmp_docker_compose_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".yaml",
+        )
+        cmd = (
+            "docker-compose -f docker-compose.yml "
+            f"-f {tmp_docker_compose_file.name} up"
+        )
+        _remove_auto_reload(
+            tmp_docker_compose_file,
+            orig_file=Path(str(PROJECT_ROOT), "docker-compose.yml"),
+        )
     if detach:
         cmd += " --detach"
     with c.cd(str(PROJECT_ROOT)):
         c.run(cmd, env=dict(UID_ENV, DOODBA_DEBUGPY_ENABLE=str(int(debugpy))))
     _logger.info("Waiting for services to spin up...")
     time.sleep(SERVICES_WAIT_TIME)
+
+
+def _remove_auto_reload(file, orig_file):
+    with open(orig_file, "r") as fd:
+        orig_docker_config = yaml.load(fd.read())
+    odoo_command = " ".join(orig_docker_config["services"]["odoo"]["command"])
+    odoo_command = odoo_command.replace("reload,", "")
+    _override_docker_command("odoo", odoo_command, file, orig_file=orig_file)
 
 
 @task(
@@ -462,7 +484,6 @@ def test(c, modules=None, debugpy=False, logs=True, cur_file=None, mode="init"):
         )
     odoo_command += f" {modules} --stop-after-init --workers=0"
     _override_docker_command(
-        c,
         "odoo",
         odoo_command,
         file=tmp_docker_compose_file,
@@ -488,7 +509,7 @@ def test(c, modules=None, debugpy=False, logs=True, cur_file=None, mode="init"):
     tmp_docker_compose_file.close()
 
 
-def _override_docker_command(c, service, command, file=None, orig_file=None):
+def _override_docker_command(service, command, file, orig_file=None):
     # Read config from main file
     if orig_file:
         with open(orig_file, "r") as fd:
@@ -501,10 +522,8 @@ def _override_docker_command(c, service, command, file=None, orig_file=None):
         "services": {service: {"command": command.split(" ")}},
     }
     docker_config_yaml = yaml.dump(docker_config)
-    if file:
-        file.write(docker_config_yaml)
-        file.flush()
-    return docker_config_yaml
+    file.write(docker_config_yaml)
+    file.flush()
 
 
 @task(
